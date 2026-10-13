@@ -5,6 +5,10 @@ import { db } from '../lib/db.js';
 import { useSettings } from '../lib/hooks.js';
 import { ageLabel, fmtDate, fmtDateTime, genderLabel, money, waNumber } from '../lib/format.js';
 import { invoiceTotals, methodLabel } from '../lib/billing.js';
+import { listImplants, previousReport } from '../lib/actions.js';
+import { sectionsFor, kindLabel, computeAll, flagOf, normText, compareRows, wallMotionText, segArray, SEG_NAMES, SEG_STATES, SECTION_VESSELS, implantLabel, n as num0 } from '../lib/studies.js';
+import { ageYearsOf } from '../lib/risk.js';
+import { SegSvg, SegLegend } from '../components/SegPlot.jsx';
 import { englishLine, urduLine, medTitle, riskShort, historyShort, letterTitle, splitAdvice } from '../lib/rx.js';
 
 // Every document here is built from database rows at the moment it is opened.
@@ -100,6 +104,15 @@ function PrintShell({ title, filename, phone, shareText, children, paper = 'A4',
   const [busy, setBusy] = useState('');
   const [msg, setMsg] = useState('');
   const a5 = paper === 'A5';
+  // Print size and margins are set by the doctor in Settings > Clinic & printing.
+  const num = (v, d) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? d : Number(v));
+  const [dTop, dSide, dBot] = a5 ? [8, 9, 7] : [11, 13, 9];
+  const paperVars = {
+    '--ps': num(settings?.print_font_pct, 100) / 100,
+    '--m-top': `${num(settings?.print_margin_top_mm, dTop)}mm`,
+    '--m-side': `${num(settings?.print_margin_side_mm, dSide)}mm`,
+    '--m-bot': `${num(settings?.print_margin_bottom_mm, dBot)}mm`,
+  };
 
   // Page size for printing. On a printed pad the blank letterhead/footer
   // areas are page margins, so they are kept free on EVERY printed page.
@@ -152,7 +165,7 @@ function PrintShell({ title, filename, phone, shareText, children, paper = 'A4',
         {msg && <div className="note" style={{ width: '100%' }}>{msg}</div>}
       </div>
       <div className="paper-wrap">
-        <div className={`paper ${a5 ? 'a5' : ''} ${pad ? 'print-pad' : ''}`} ref={ref}>{children}</div>
+        <div className={`paper ${a5 ? 'a5' : ''} ${pad ? 'print-pad' : ''}`} ref={ref} style={paperVars}>{children}</div>
       </div>
     </div>
   );
@@ -280,7 +293,10 @@ export function PrescriptionDoc() {
     return { rx, visit, patient, doctor, followUp: fu?.appt_date || rx.follow_up_date || null };
   }, [id]);
   if (!d || d === NOT_FOUND || !s) return <Waiting value={d === NOT_FOUND ? null : d && s} what="Prescription" />;
-  const { rx, visit: v = {}, patient, doctor, followUp } = d;
+  return <RxView s={s} {...d} />;
+}
+
+function RxView({ s, rx, visit: v = {}, patient, doctor, followUp, test = false }) {
   const lang = s.rx_language || 'both';
   const date = v.visit_date || rx.created_at;
   const meds = (rx.medicines || []).filter((m) => m.name);
@@ -297,7 +313,7 @@ export function PrescriptionDoc() {
   const advice = String(rx.advice || '').split('\n').map((x) => x.trim()).filter(Boolean);
 
   return (
-    <PrintShell title={`Prescription ${rx.rx_number}`} filename={`Prescription-${patient?.full_name?.replace(/\s+/g, '-') || ''}-${rx.rx_number}.pdf`}
+    <PrintShell title={test ? 'Test print' : `Prescription ${rx.rx_number}`} filename={`Prescription-${patient?.full_name?.replace(/\s+/g, '-') || ''}-${rx.rx_number}.pdf`}
       phone={patient?.phone} paper={s.rx_paper || 'A4'} pad={padOf(s)}
       shareText={`Prescription for ${patient?.full_name} (${patient?.mr_number}) - ${doctor?.full_name || s.clinic_name || ''}, ${fmtDate(date)}`}>
       <Letterhead s={s} doctor={doctor} />
@@ -363,6 +379,26 @@ export function PrescriptionDoc() {
   );
 }
 
+/* A sample prescription so the doctor can try print size and margins without a real patient. */
+export function TestPrintDoc() {
+  const s = useSettings();
+  const doctor = useLiveQuery(async () => (await db().doctors.toArray()).find((x) => x.active !== false) || null, [], undefined);
+  if (!s || doctor === undefined) return <Waiting value={undefined} what="Test print" />;
+  const today = new Date().toISOString().slice(0, 10);
+  const rx = {
+    rx_number: 'TEST-00001', created_at: today, investigations: ['ECG', 'Echocardiography', 'Lipid profile'],
+    advice: 'Low salt diet - نمک کم کھائیں\nDaily 30-minute walk - روزانہ 30 منٹ پیدل چلیں',
+    medicines: [
+      { form: 'Tab', name: 'Aspirin 75 mg', pattern: '0+1+0', timing: 'After meal', duration: 'Continue' },
+      { form: 'Tab', name: 'Atorvastatin 20 mg', pattern: '0+0+1', duration: '1 month' },
+      { form: 'Tab', name: 'Bisoprolol 2.5 mg', pattern: '1+0+0', duration: '1 month' },
+    ],
+  };
+  const visit = { visit_date: today, bp_systolic: 130, bp_diastolic: 85, pulse: 76, weight_kg: 78, chief_complaint: 'Sample complaint', diagnosis: 'Sample diagnosis (test print)', echo_ef: 55 };
+  const patient = { full_name: 'Sample Patient', mr_number: 'MR-TEST', dob: '1970-01-01', gender: 'male', risk_factors: ['hypertension'], cardiac_history: [] };
+  return <RxView s={s} rx={rx} visit={visit} patient={patient} doctor={doctor} followUp={today} test />;
+}
+
 /* ------------------------------------------------------ Letters/certificates */
 export function LetterDoc() {
   const { id } = useParams();
@@ -389,7 +425,7 @@ export function LetterDoc() {
           <tr><td>Age / Sex</td><td>{[ageLabel(patient?.dob, new Date(l.letter_date)), genderLabel(patient?.gender)].filter(Boolean).join(' / ')}</td></tr>
           <tr><td>MR No.</td><td>{patient?.mr_number}{patient?.cnic ? `  ·  CNIC ${patient.cnic}` : ''}</td></tr>
           {l.diagnosis && <tr><td>Diagnosis</td><td><b>{l.diagnosis}</b></td></tr>}
-          {l.from_date && <tr><td>Rest advised</td><td>{fmtDate(l.from_date)} to {fmtDate(l.to_date)}</td></tr>}
+          {l.from_date && <tr><td>{l.kind === 'discharge' ? 'Admitted / discharged' : 'Rest advised'}</td><td>{fmtDate(l.from_date)} to {fmtDate(l.to_date)}</td></tr>}
         </tbody></table>
         <div className="letter-body pre">{l.body}</div>
       </div>
@@ -499,6 +535,133 @@ export function ReceiptDoc() {
         {totals.due !== after.due && <p className="faint">Current balance on this invoice: {money(totals.due, cur)}</p>}
       </div>
       <div className="doc-foot"><span>{s?.invoice_footer_note || 'Thank you.'}</span><span>{pay.payment_number}</span></div>
+    </PrintShell>
+  );
+}
+
+/* ------------------------------------------------------- Cardiac reports */
+const valueText = (f, v) => {
+  if (Array.isArray(v)) return v.join(', ');
+  return `${v}${f.unit && f.t !== 'pick' ? ` ${f.unit}` : ''}`;
+};
+
+export function StudyDoc() {
+  const { id } = useParams();
+  const s = useSettings();
+  const d = useDoc(async () => {
+    const r = await db().cardiac_reports.get(id);
+    if (!r) return null;
+    const [patient, doctor, prev, implants] = await Promise.all([
+      db().patients.get(r.patient_id), db().doctors.get(r.doctor_id),
+      previousReport({ patientId: r.patient_id, kind: r.kind, date: r.report_date, excludeId: r.id }),
+      listImplants(r.patient_id, { reportId: r.id }),
+    ]);
+    return { r, patient, doctor, prev, implants };
+  }, [id]);
+  if (!d || d === NOT_FOUND || !s) return <Waiting value={d === NOT_FOUND ? null : d && s} what="Report" />;
+  const { r, patient, doctor, prev, implants } = d;
+  const data = r.data || {};
+  const ctx = { sex: patient?.gender, age: ageYearsOf(patient?.dob, r.report_date) };
+  const calcs = computeAll(r.kind, data, ctx);
+  const title = kindLabel(r.kind);
+  const cmp = prev ? compareRows(r.kind, data, prev.data || {}, calcs, computeAll(r.kind, prev.data || {}, ctx)) : [];
+  const lines = (r.impression || '').split('\n').map((x) => x.replace(/^\d+\.\s*/, '').trim()).filter(Boolean);
+  const blocks = sectionsFor(r.kind).map((sec) => {
+    const cells = [];
+    let extra = null;
+    for (const f of sec.fields) {
+      if (f.t === 'seg17') { if (segArray(data[f.k])) extra = { ...extra, seg: [f, data[f.k]] }; continue; }
+      if (f.t === 'vessels') { if (data.vessels) extra = { ...extra, vessels: data.vessels }; continue; }
+      if (f.t === 'implants') continue;
+      const v = f.t === 'calc' ? calcs[f.k] : data[f.k];
+      if (v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length)) continue;
+      cells.push({ f, v });
+    }
+    return { sec, cells, extra };
+  }).filter((b) => b.cells.length || b.extra);
+
+  return (
+    <PrintShell title={title} filename={`${title.replace(/[^A-Za-z]+/g, '-')}-${r.report_number}.pdf`}
+      phone={patient?.phone} paper={s.rx_paper || 'A4'} pad={padOf(s)}
+      shareText={`${title} report for ${patient?.full_name} - ${doctor?.full_name || ''}, ${fmtDate(r.report_date)}`}>
+      <Letterhead s={s} doctor={doctor} />
+      <div className="letter study-doc">
+        <div className="letter-meta"><span>Report: {r.report_number}</span><span>Date: {fmtDate(r.report_date)}</span></div>
+        <h2 className="letter-title">{title}</h2>
+        <table className="letter-pt"><tbody>
+          <tr><td>Patient</td><td><b>{patient?.full_name}</b></td><td>MR No.</td><td>{patient?.mr_number}</td></tr>
+          <tr><td>Age / Sex</td><td>{[ageLabel(patient?.dob, new Date(r.report_date)), genderLabel(patient?.gender)].filter(Boolean).join(' / ')}</td>
+            <td>Phone</td><td>{patient?.phone || '-'}</td></tr>
+        </tbody></table>
+
+        {blocks.map(({ sec, cells, extra }) => (
+          <section key={sec.id} className="st-sec">
+            <h3>{sec.title}</h3>
+            {cells.length > 0 && (
+              <div className="st-grid">
+                {cells.map(({ f, v }) => {
+                  const flag = f.t === 'pick' || f.t === 'text' ? null : flagOf(f, v, ctx);
+                  const nt = f.t === 'num' || f.t === 'calc' ? normText(f, ctx) : '';
+                  return (
+                    <div key={f.k} className={`st-cell ${f.t === 'text' && String(v).length > 40 ? 'full' : ''}`}>
+                      <span>{f.label}</span>
+                      <b>{valueText(f, v)}{flag ? (flag === 'high' ? ' \u25B2' : ' \u25BC') : ''}{nt ? <small> ({nt})</small> : null}</b>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {extra?.seg && (
+              <div className="st-seg">
+                <SegSvg value={extra.seg[1]} size={150} />
+                <div>
+                  <b>{extra.seg[0].label}</b>
+                  <SegLegend />
+                  <div className="st-segtxt">{wallMotionText(extra.seg[1])}</div>
+                  {segArray(extra.seg[1]).map((v, i) => (v > 1 ? <div key={i}>{i + 1}. {SEG_NAMES[i]}: {SEG_STATES.find((x) => x[0] === v)[1]}</div> : null))}
+                </div>
+              </div>
+            )}
+            {extra?.vessels && (
+              <table className="st-table"><thead><tr><th>Vessel</th><th>Stenosis</th><th>Remarks</th></tr></thead>
+                <tbody>{SECTION_VESSELS.filter(([k]) => extra.vessels[k]).map(([k, name]) => (
+                  <tr key={k}><td>{name}</td><td>{num0(extra.vessels[k].pct) != null ? `${extra.vessels[k].pct}%` : '-'}</td><td>{extra.vessels[k].note || ''}</td></tr>
+                ))}</tbody></table>
+            )}
+          </section>
+        ))}
+
+        {implants.length > 0 && (
+          <section className="st-sec">
+            <h3>Implanted devices</h3>
+            <table className="st-table"><thead><tr><th>Type</th><th>Brand / model</th><th>Size</th><th>Site</th><th>Serial / lot</th></tr></thead>
+              <tbody>{implants.map((i) => (
+                <tr key={i.id}><td>{implantLabel(i.kind)}</td><td>{[i.brand, i.model].filter(Boolean).join(' ') || '-'}</td><td>{i.size || '-'}</td><td>{i.site || '-'}</td><td>{i.serial_no || '-'}</td></tr>
+              ))}</tbody></table>
+          </section>
+        )}
+
+        {cmp.length > 0 && (
+          <section className="st-sec">
+            <h3>Compared with previous ({fmtDate(prev.report_date)})</h3>
+            <table className="st-table"><thead><tr><th>Measurement</th><th>Previous</th><th>Now</th><th>Change</th></tr></thead>
+              <tbody>{cmp.map((x) => (
+                <tr key={x.k}><td>{x.label}{x.unit ? ` (${x.unit})` : ''}</td><td>{x.before ?? '-'}</td><td>{x.now ?? '-'}</td><td>{x.diff == null ? '-' : `${x.diff > 0 ? '+' : ''}${x.diff}`}</td></tr>
+              ))}</tbody></table>
+          </section>
+        )}
+
+        {lines.length > 0 && (
+          <section className="st-sec st-imp">
+            <h3>Impression</h3>
+            <ol>{lines.map((l, i) => <li key={i}>{l}</li>)}</ol>
+          </section>
+        )}
+        {r.advice && <section className="st-sec"><h3>Advice</h3><div className="pre">{r.advice}</div></section>}
+        <p className="faint st-note">{'\u25B2'} above and {'\u25BC'} below the normal range shown in brackets.</p>
+      </div>
+      <Signature doctor={doctor} />
+      <LetterFoot s={s} number={r.report_number} />
     </PrintShell>
   );
 }

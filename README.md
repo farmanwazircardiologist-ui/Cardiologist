@@ -3,6 +3,23 @@
 A clinic system for one cardiologist (plus reception). No laboratory module.
 React PWA (works offline) + Supabase (PostgreSQL, Auth, Storage, Row Level Security). Deploys GitHub → Vercel **or** Netlify → Supabase.
 
+
+## Cardiac reports, risk scores, cath lab (new)
+
+Doctor only (reception cannot see or sync any of it).
+
+- **Patient profile > Cardiac reports**, and **inside a visit > Cardiac reports**: Echo, Stress echo, TEE, Holter, TMT, ABPM, Cath lab (angiography / PCI) and Pacemaker / ICD / CRT.
+- Every report is a form of taps and numbers: normal-range check by sex (abnormal turns red), automatic calculations (BSA, LV mass, EF, RVSP, AVA, MVA, Duke score, night dip and more), a one-tap **Fill normal template**, a drafted **impression** you can edit, and a **comparison with the previous report** of the same kind.
+- Echo has a clickable 17-segment wall motion diagram (with WMSI and the coronary territory), valve grading, aorta, IVC, shunts, prosthesis, HCM and bubble study.
+- Stents and devices (brand, size, vessel, serial / lot) are kept as separate records and listed on the patient's Overview and Cardiac reports tab. DAPT end dates show on the profile and on the Today screen (30 days before they end).
+- The echo EF is copied into the visit (trend chart, prescription, referral letter), so it is never typed twice. A report made on the same day joins that day's visit by itself.
+- Reports print / save as PDF / share on WhatsApp like prescriptions. Services made in a visit (Echo, ETT, Holter, angiography, PCI, pacemaker) are offered in that visit's Bill.
+- **Risk scores** inside a visit: ASCVD (Pooled Cohort Equations), CHA2DS2-VASc, HAS-BLED. Filled from the patient record, saved with the visit, summarised on the Overview.
+- **Discharge summary** is a new letter kind, drafted from the cath / device report, medicines and stents.
+- Reports & backup: counts of reports made, a Cardiac reports CSV, and they are part of the full backup.
+
+Images from the echo or ECG machine are still attached from "Reports & files" (photo or PDF).
+
 ## What it does
 
 - **One profile per patient**: registered once (MR number), with cardiac history, risk factors, blood thinner and INR target, allergies.

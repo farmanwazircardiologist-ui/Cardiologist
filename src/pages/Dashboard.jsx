@@ -8,6 +8,7 @@ import { updateRow } from '../lib/repo.js';
 import { startVisit, markReminded } from '../lib/actions.js';
 import { useDoctors, useSettings } from '../lib/hooks.js';
 import { ApptBadge, useMoney, useAction } from '../components/ui.jsx';
+import { daptDue } from '../components/Studies.jsx';
 
 // WhatsApp reminder text, English + Urdu.
 export function reminderText(p, a, settings) {
@@ -55,9 +56,10 @@ export default function Dashboard() {
     const linked = new Set(todayAppts.map((a) => a.visit_id).filter(Boolean));
     const walkIns = visits.filter((v) => !linked.has(v.id));
     const unpaid = all.filter((i) => i.invoice_date === today && i.due > 0);
-    const pts = await patientMap([...todayAppts, ...upcoming, ...missed, ...walkIns, ...unpaid].map((x) => x.patient_id));
+    const dapt = isAdmin ? await daptDue(30) : [];
+    const pts = await patientMap([...todayAppts, ...upcoming, ...missed, ...walkIns, ...unpaid, ...dapt.map((x) => x.r)].map((x) => x.patient_id));
     return {
-      pts, todayAppts, upcoming, missed, walkIns, unpaid,
+      pts, dapt, todayAppts, upcoming, missed, walkIns, unpaid,
       waiting: todayAppts.filter((a) => a.status === 'waiting').length,
       patientsToday: new Set([...visits.map((v) => v.patient_id), ...todayAppts.map((a) => a.patient_id)]).size,
       seen: visits.filter((v) => v.status === 'completed').length,
@@ -65,7 +67,7 @@ export default function Dashboard() {
       billed: all.filter((i) => i.invoice_date === today).reduce((s, i) => s + i.total, 0),
       outstanding: all.reduce((s, i) => s + Math.max(i.due, 0), 0),
     };
-  }, [today]);
+  }, [today, isAdmin]);
   if (!d) return null;
 
   async function start(a) {
@@ -144,6 +146,19 @@ export default function Dashboard() {
                 <td style={{ width: 110 }}>{fmtDate(a.appt_date)}</td>
                 <td><Link to={`/patients/${a.patient_id}`}><b>{d.pts[a.patient_id]?.full_name}</b></Link><div className="faint">{d.pts[a.patient_id]?.phone}</div></td>
                 <td className="right"><RemindButton patient={d.pts[a.patient_id]} appt={a} /></td>
+              </tr>
+            ))}
+          </tbody></table>
+        </div>
+      )}
+      {d.dapt.length > 0 && (
+        <div className="panel">
+          <div className="panel-head"><h2>DAPT ending soon</h2><span className="faint">stent patients, next 30 days</span></div>
+          <table className="t"><tbody>
+            {d.dapt.map((x) => (
+              <tr key={x.r.id}>
+                <td style={{ width: 110 }}>{fmtDate(x.end)}</td>
+                <td><Link to={`/patients/${x.r.patient_id}?tab=studies`}><b>{d.pts[x.r.patient_id]?.full_name}</b></Link><div className="faint">{x.r.data?.dapt_drug} · {x.r.data?.dapt_months}</div></td>
               </tr>
             ))}
           </tbody></table>

@@ -15,6 +15,8 @@ import { PatientForm } from '../components/patients.jsx';
 import { PatientFiles } from '../components/Files.jsx';
 import { LettersList } from '../components/Letters.jsx';
 import TrendChart from '../components/TrendChart.jsx';
+import { StudiesList, ImplantsPanel } from '../components/Studies.jsx';
+import { RiskSummary } from '../components/Risk.jsx';
 
 export function PatientHeader({ patient, children }) {
   const acct = useLiveQuery(() => patientAccount(patient.id), [patient.id]);
@@ -81,7 +83,7 @@ export default function PatientProfile() {
   }
 
   const tabs = isAdmin
-    ? [['overview', 'Overview'], ['visits', 'Visits'], ['rx', 'Prescriptions'], ['reports', 'Reports & files'],
+    ? [['overview', 'Overview'], ['visits', 'Visits'], ['rx', 'Prescriptions'], ['studies', 'Cardiac reports'], ['reports', 'Reports & files'],
       ['letters', 'Letters'], ['appointments', 'Appointments'], ['invoices', 'Invoices'], ['payments', 'Payments']]
     : [['reports', 'Reports & files'], ['appointments', 'Appointments'], ['invoices', 'Invoices'], ['payments', 'Payments']];
 
@@ -111,6 +113,7 @@ export default function PatientProfile() {
       {tab === 'overview' && <Overview patient={patient} />}
       {tab === 'visits' && <VisitsTab id={id} />}
       {tab === 'rx' && <RxTab id={id} />}
+      {tab === 'studies' && isAdmin && <div className="stack"><StudiesList patient={patient} /><ImplantsPanel patient={patient} /></div>}
       {tab === 'reports' && <PatientFiles patientId={id} />}
       {tab === 'letters' && <LettersList patient={patient} />}
       {tab === 'appointments' && <ApptsTab id={id} />}
@@ -254,6 +257,8 @@ function Overview({ patient }) {
           {data.last && <p className="faint">From visit on {fmtDate(data.last.visit_date)} with {doctors[data.last.doctor_id]?.full_name || 'doctor'}.</p>}
         </div>
       </div>
+      <ImplantsPanel patient={patient} />
+      <RiskSummary visits={data.visits} />
       {data.visits.length > 0 && (
         <div className="panel">
           <h2>Trends across visits</h2>

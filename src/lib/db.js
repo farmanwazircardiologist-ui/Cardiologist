@@ -5,13 +5,13 @@ import Dexie from 'dexie';
 export const TABLES = [
   'clinic_settings', 'doctors', 'profiles', 'medicines', 'rx_templates', 'clinic_services',
   'patients', 'visits', 'appointments', 'prescriptions', 'patient_files', 'letters',
-  'invoices', 'invoice_items', 'payments',
+  'cardiac_reports', 'implants', 'invoices', 'invoice_items', 'payments',
 ];
 
 // Fields the server manages; never sent from the device.
 export const SERVER_FIELDS = ['updated_at', 'row_version', 'created_by', 'updated_by'];
 
-const SCHEMA = {
+const SCHEMA_V1 = {
   meta: 'key',
   clinic_settings: 'id, _dirty',
   doctors: 'id, _dirty',
@@ -30,6 +30,12 @@ const SCHEMA = {
   payments: 'id, invoice_id, patient_id, _dirty',
 };
 
+// Version 2 adds the cardiac report and implant tables. Existing data is untouched.
+const SCHEMA_V2 = {
+  cardiac_reports: 'id, patient_id, visit_id, kind, report_date, _dirty',
+  implants: 'id, patient_id, report_id, _dirty',
+};
+
 let current = null;
 
 // One local database per signed-in user, so a reception user on a shared computer
@@ -38,7 +44,8 @@ export function openUserDb(userId) {
   if (current && current.name === `cardio_${userId}`) return current;
   if (current) current.close();
   const db = new Dexie(`cardio_${userId}`);
-  db.version(1).stores(SCHEMA);
+  db.version(1).stores(SCHEMA_V1);
+  db.version(2).stores(SCHEMA_V2);
   current = db;
   return db;
 }

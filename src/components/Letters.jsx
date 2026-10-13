@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../lib/db.js';
-import { createLetter, getVisitPrescription } from '../lib/actions.js';
+import { createLetter, getVisitPrescription, listReports, listImplants } from '../lib/actions.js';
 import { useDoctors } from '../lib/hooks.js';
 import { LETTER_KINDS, letterTitle, letterDraft } from '../lib/rx.js';
 import { fmtDate, todayISO, addDays } from '../lib/format.js';
@@ -44,21 +44,30 @@ export function LetterModal({ kind, patient, visit, onClose }) {
   const doctors = useDoctors();
   const doctor = doctors.find((d) => d.id === visit?.doctor_id) || doctors[0];
   const rx = useLiveQuery(() => (visit ? getVisitPrescription(visit.id) : null), [visit?.id]);
+  // a discharge summary is written from the latest cath lab or device report
+  const rep = useLiveQuery(async () => {
+    if (kind !== 'discharge') return null;
+    const all = (await listReports(patient.id)).filter((r) => r.kind === 'cath' || r.kind === 'device');
+    return all.find((r) => r.visit_id === visit?.id) || all[0] || null;
+  }, [kind, patient.id, visit?.id], null);
+  const imps = useLiveQuery(() => (rep ? listImplants(patient.id, { reportId: rep.id }) : []), [rep?.id], []);
   const [f, setF] = useState(() => ({
-    addressed_to: kind === 'referral' ? '' : 'To whom it may concern',
+    addressed_to: kind === 'referral' ? '' : kind === 'discharge' ? '' : 'To whom it may concern',
     diagnosis: visit?.diagnosis || '',
-    from_date: todayISO(), days: '3', body: '', touched: false,
+    from_date: todayISO(), days: '3', to_date: todayISO(), body: '', touched: false,
   }));
   const to = kind === 'sick_leave' && Number(f.days) > 0 ? addDays(f.from_date, Number(f.days) - 1) : null;
   const draft = letterDraft(kind, {
     patient, visit, rx, doctor,
-    from: kind === 'sick_leave' ? fmtDate(f.from_date) : null, to: to ? fmtDate(to) : null,
+    from: kind === 'sick_leave' || kind === 'discharge' ? fmtDate(f.from_date) : null,
+    to: kind === 'discharge' ? fmtDate(f.to_date) : to ? fmtDate(to) : null,
+    report: rep, implants: imps,
   });
   const body = f.touched ? f.body : draft;
   async function save() {
     const l = await run(() => createLetter({
       patient, visit, doctor, kind, addressed_to: f.addressed_to, diagnosis: f.diagnosis, body,
-      from_date: kind === 'sick_leave' ? f.from_date : null, to_date: to,
+      from_date: kind === 'sick_leave' || kind === 'discharge' ? f.from_date : null, to_date: kind === 'discharge' ? f.to_date : to,
     }), 'Saved');
     if (l) nav(`/print/letter/${l.id}`);
   }
@@ -71,6 +80,10 @@ export function LetterModal({ kind, patient, visit, onClose }) {
           <input value={f.addressed_to} onChange={(e) => setF({ ...f, addressed_to: e.target.value })} />
         </Field>
         <Field label="Diagnosis"><input value={f.diagnosis} onChange={(e) => setF({ ...f, diagnosis: e.target.value })} /></Field>
+        {kind === 'discharge' && <>
+          <Field label="Admitted on"><input type="date" value={f.from_date} onChange={(e) => setF({ ...f, from_date: e.target.value })} /></Field>
+          <Field label="Discharged on"><input type="date" value={f.to_date} onChange={(e) => setF({ ...f, to_date: e.target.value })} /></Field>
+        </>}
         {kind === 'sick_leave' && <>
           <Field label="Rest from"><input type="date" value={f.from_date} onChange={(e) => setF({ ...f, from_date: e.target.value })} /></Field>
           <Field label="Number of days"><input type="number" min="1" max="90" value={f.days} onChange={(e) => setF({ ...f, days: e.target.value })} /></Field>

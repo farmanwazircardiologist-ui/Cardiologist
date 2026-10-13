@@ -275,3 +275,72 @@ describe('cancelling a visit started by mistake', () => {
     await expect(A.cancelVisit(v2, 'test')).rejects.toThrow(/payment/i);
   });
 });
+
+describe('cardiac reports (echo, cath, device) work offline and sync', () => {
+  it('echo report joins today\'s visit, updates the visit EF, saves calculations and syncs', async () => {
+    const srv = createMockServer();
+    openUserDb('study-device'); initSync(srv.makeClient('u-admin')); await syncNow();
+    await seedCatalogue();
+    const pt = await A.registerPatient({ full_name: 'Echo Patient', phone: '03001110000', dob: '1970-01-01', gender: 'female' });
+    const visit = await A.startVisit({ patientId: pt.id, doctorId: DOC.id });
+    const { computeAll, buildImpression } = await import('../src/lib/studies.js');
+    const data = { ef: 38, lvidd: 52, lvids: 40, seg: '3' + '1'.repeat(16), mv_reg: 'Moderate' };
+    const calcs = computeAll('echo', data, { sex: 'female', age: 56 });
+    const impression = buildImpression('echo', data, { sex: 'female', age: 56 });
+    // no visit passed: today's visit with this doctor is found automatically
+    const rep = await A.saveReport({ patient: pt, doctor: DOC, kind: 'echo', data: { ...data, calc: calcs }, impression, advice: 'Repeat echo in 3 months' });
+    expect(rep.report_number).toMatch(/^RPT1-00001$/);
+    expect(rep.visit_id).toBe(visit.id);
+    const v = await db().visits.get(visit.id);
+    expect(v.echo_ef).toBe(38);                                  // same EF shows in the visit, trend and prescription
+    expect(v.echo_findings).toMatch(/Regional wall motion/);
+    expect(rep.data.calc.fs).toBe(23.1);
+    // editing keeps one row and the same number
+    const edited = await A.saveReport({ report: rep, patient: pt, doctor: DOC, kind: 'echo', data: { ...data, ef: 42, calc: calcs }, impression, advice: '' });
+    expect(edited.id).toBe(rep.id);
+    expect((await db().visits.get(visit.id)).echo_ef).toBe(42);
+    expect(await db().cardiac_reports.count()).toBe(1);
+    await syncNow();
+    expect(srv.T('cardiac_reports').size).toBe(1);
+    expect([...srv.T('cardiac_reports').values()][0].data.ef).toBe(42);
+    // newest earlier report of the same kind is found for comparison
+    const second = await A.saveReport({ patient: pt, doctor: DOC, kind: 'echo', date: todayISO(), data: { ef: 50 }, impression: '' });
+    const prev = await A.previousReport({ patientId: pt.id, kind: 'echo', date: todayISO(), excludeId: second.id });
+    expect(prev.id).toBe(rep.id);
+    stopSync();
+  });
+
+  it('cath report keeps stents as separate implant rows, removing a row hides it, delete hides both', async () => {
+    const srv = createMockServer();
+    openUserDb('cath-device'); initSync(srv.makeClient('u-admin')); await syncNow();
+    await seedCatalogue();
+    const pt = await A.registerPatient({ full_name: 'Stent Patient', phone: '03002220000', dob: '1960-01-01', gender: 'male' });
+    const rep = await A.saveReport({ patient: pt, doctor: DOC, kind: 'cath', data: { vessels: { lad: { pct: 90 } }, dapt_drug: 'Ticagrelor', dapt_months: '12 months' }, impression: '1. Single vessel disease',
+      implants: [{ kind: 'stent', brand: 'Xience', size: '3.0 x 24', site: 'LAD', serial_no: 'LOT123' }, { kind: 'stent', brand: 'Resolute', site: 'RCA' }, { kind: 'stent' }] });
+    let list = await A.listImplants(pt.id);
+    expect(list).toHaveLength(2);                                // the empty row is ignored
+    expect(list.every((i) => i.report_id === rep.id && i.patient_id === pt.id)).toBe(true);
+    await A.saveReport({ report: rep, patient: pt, doctor: DOC, kind: 'cath', data: rep.data, impression: rep.impression, implants: [list.find((i) => i.brand === 'Xience')] });
+    list = await A.listImplants(pt.id);
+    expect(list.map((i) => i.brand)).toEqual(['Xience']);
+    await syncNow();
+    expect(srv.T('implants').size).toBe(2);                      // removed stent stays on the server as a hidden row
+    await A.deleteReport(rep);
+    expect(await A.listReports(pt.id)).toHaveLength(0);
+    expect(await A.listImplants(pt.id)).toHaveLength(0);
+    stopSync();
+  });
+
+  it('risk scores are stored on the visit', async () => {
+    openUserDb('risk-device'); initSync(createMockServer().makeClient('u-admin')); await syncNow();
+    await seedCatalogue();
+    const pt = await A.registerPatient({ full_name: 'Risk Patient', phone: '03003330000', dob: '1960-01-01', gender: 'male' });
+    const visit = await A.startVisit({ patientId: pt.id, doctorId: DOC.id });
+    await A.saveRiskScore(visit, 'ascvd', { pct: 12.4, band: 'Intermediate' });
+    await A.saveRiskScore(visit, 'hasbled', { score: 2 });
+    const v = await db().visits.get(visit.id);
+    expect(v.risk_scores.ascvd.pct).toBe(12.4);
+    expect(v.risk_scores.hasbled.score).toBe(2);               // second save keeps the first
+    stopSync();
+  });
+});

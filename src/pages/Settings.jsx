@@ -92,6 +92,21 @@ function ClinicSettings() {
           <Field label="Space for the printed footer (mm)"><input type="number" min="0" max="100" value={f.rx_pad_bottom_mm ?? 20} onChange={set('rx_pad_bottom_mm')} /></Field>
         </div>
       )}
+      <h3 style={{ margin: '6px 0 0' }}>Print size and margins</h3>
+      <div className="note">Set these once for your printer and paper. Press <b>Test print</b> to try them on a sample prescription, then adjust until it looks right.</div>
+      <div className="grid g4">
+        <Field label="Text size (%)" hint="100 = normal. Raise it if the print looks small.">
+          <input type="number" min="70" max="150" step="5" value={f.print_font_pct ?? 100} onChange={set('print_font_pct')} />
+        </Field>
+        <Field label="Top margin (mm)"><input type="number" min="0" max="40" value={f.print_margin_top_mm ?? ''} placeholder={f.rx_paper === 'A5' ? '8' : '11'} onChange={set('print_margin_top_mm')} /></Field>
+        <Field label="Side margins (mm)"><input type="number" min="0" max="40" value={f.print_margin_side_mm ?? ''} placeholder={f.rx_paper === 'A5' ? '9' : '13'} onChange={set('print_margin_side_mm')} /></Field>
+        <Field label="Bottom margin (mm)"><input type="number" min="0" max="40" value={f.print_margin_bottom_mm ?? ''} placeholder={f.rx_paper === 'A5' ? '7' : '9'} onChange={set('print_margin_bottom_mm')} /></Field>
+      </div>
+      <div className="row">
+        <button type="button" className="btn" onClick={() => window.open('/print/test', '_blank')}>Test print (sample prescription)</button>
+        <button type="button" className="btn ghost" onClick={() => setF({ ...f, print_font_pct: 100, print_margin_top_mm: null, print_margin_side_mm: null, print_margin_bottom_mm: null })}>Reset size and margins</button>
+        <span className="faint">Save first, then test. In the print window choose "Margins: None" and "Scale: 100%".</span>
+      </div>
       <FollowupDaysField value={f.followup_days} onChange={(v) => setF({ ...f, followup_days: v })} />
       <div className="row"><div className="spacer" />
         <button className="btn primary" onClick={() => {
@@ -100,6 +115,10 @@ function ClinicSettings() {
           const { id, created_at, ...rest } = f;
           rest.rx_pad_top_mm = Math.min(150, Math.max(0, Number(rest.rx_pad_top_mm) || 0));
           rest.rx_pad_bottom_mm = Math.min(100, Math.max(0, Number(rest.rx_pad_bottom_mm) || 0));
+          rest.print_font_pct = Math.min(150, Math.max(70, Number(rest.print_font_pct) || 100));
+          for (const k of ['print_margin_top_mm', 'print_margin_side_mm', 'print_margin_bottom_mm']) {
+            rest[k] = rest[k] === null || rest[k] === '' || rest[k] === undefined ? null : Math.min(40, Math.max(0, Number(rest[k]) || 0));
+          }
           run(async () => { const r = await updateRow('clinic_settings', 1, { ...rest, setup_completed: true }); await confirmSynced('clinic_settings', 1); return r; }, 'Clinic settings saved');
         }}>Save clinic settings</button>
       </div>
@@ -528,7 +547,7 @@ function Audit() {
       <div className="panel-head"><h2>Audit log</h2><div className="grow" />
         <select value={table} onChange={(e) => setTable(e.target.value)} style={{ width: 220 }}>
           <option value="">All records</option>
-          {['payments', 'invoices', 'invoice_items', 'prescriptions', 'letters', 'patient_files', 'patients', 'rx_templates', 'clinic_services', 'clinic_settings', 'profiles', 'doctors'].map((t) => <option key={t} value={t}>{t}</option>)}
+          {['payments', 'invoices', 'invoice_items', 'prescriptions', 'letters', 'cardiac_reports', 'implants', 'visits', 'patient_files', 'patients', 'rx_templates', 'clinic_services', 'clinic_settings', 'profiles', 'doctors'].map((t) => <option key={t} value={t}>{t}</option>)}
         </select></div>
       {rows === null && <p className="muted">Connect to the internet to view the audit log.</p>}
       {rows && <div className="table-wrap"><table className="t"><tbody>

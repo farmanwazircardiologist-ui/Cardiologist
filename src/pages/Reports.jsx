@@ -7,6 +7,7 @@ import { withTotals, patientMap } from '../lib/queries.js';
 import { methodLabel } from '../lib/billing.js';
 import { addDays, fmtDate, todayISO, toISODate, csvDownload, round2 } from '../lib/format.js';
 import { riskLabel, historyLabel } from '../lib/rx.js';
+import { kindLabel } from '../lib/studies.js';
 import { Money, useMoney, Tabs, useAction } from '../components/ui.jsx';
 
 function rangeFor(kind, from, to) {
@@ -53,6 +54,9 @@ export default function Reports() {
     const dx = {};
     rVisits.forEach((v) => String(v.diagnosis || '').split(',').map((x) => x.trim()).filter(Boolean)
       .forEach((x) => { dx[x] = (dx[x] || 0) + 1; }));
+    const studies = {};
+    (await db().cardiac_reports.toArray()).filter((x) => !x.deleted_at && inRange(x.report_date))
+      .forEach((x) => { studies[x.kind] = (studies[x.kind] || 0) + 1; });
     const dues = invs.filter((i) => i.due > 0);
     const duePts = {};
     dues.forEach((i) => { duePts[i.patient_id] = round2((duePts[i.patient_id] || 0) + i.due); });
@@ -65,7 +69,7 @@ export default function Reports() {
       collected: sum(rPays, (p) => Number(p.amount)),
       dueInRange: sum(rInv, (i) => i.due),
       dueAll: sum(dues, (i) => i.due),
-      days, services, dx, duePts, pts, rPays,
+      days, services, dx, duePts, pts, rPays, studies,
     };
   }, [a, b], null);
 
@@ -134,7 +138,13 @@ export default function Reports() {
           <tbody>{Object.entries(r.services).sort((x, y) => y[1].amount - x[1].amount).map(([n, x]) =>
             <tr key={n}><td>{n}</td><td className="money">{x.count}</td><td className="money"><Money v={x.amount} /></td></tr>)}
             {!Object.keys(r.services).length && <tr><td colSpan="3" className="empty">Nothing billed in this period.</td></tr>}</tbody>
-        </table></div>
+        </table>
+        {Object.keys(r.studies).length > 0 && (
+          <table className="t" style={{ marginTop: 14 }}>
+            <thead><tr><th>Cardiac reports made</th><th className="money">Count</th></tr></thead>
+            <tbody>{Object.entries(r.studies).sort((x, y) => y[1] - x[1]).map(([k, c]) => <tr key={k}><td>{kindLabel(k)}</td><td className="money">{c}</td></tr>)}</tbody>
+          </table>
+        )}</div>
       )}
       {tab === 'dx' && (
         <div className="panel"><table className="t">
@@ -210,6 +220,14 @@ function Backup() {
       ...list.map((i) => [i.invoice_number, i.invoice_date, pts[i.patient_id]?.mr_number, pts[i.patient_id]?.full_name, i.total, i.paid, i.due, i.status]),
     ]);
   }
+  async function studiesCsv() {
+    const [list, pts] = [await db().cardiac_reports.toArray(), Object.fromEntries((await db().patients.toArray()).map((p) => [p.id, p]))];
+    csvDownload(`cardiac-reports-${stamp}.csv`, [
+      ['Report', 'Date', 'Type', 'MR', 'Patient', 'EF', 'Impression'],
+      ...list.filter((x) => !x.deleted_at).map((x) => [x.report_number, x.report_date, kindLabel(x.kind), pts[x.patient_id]?.mr_number, pts[x.patient_id]?.full_name,
+        x.data?.ef ?? x.data?.ef_rest ?? '', (x.impression || '').replace(/\n/g, ' | ')]),
+    ]);
+  }
   async function fullJson() {
     const out = { exported_at: new Date().toISOString(), tables: {} };
     for (const t of TABLES) out.tables[t] = (await db()[t].toArray()).map(clean);
@@ -228,6 +246,7 @@ function Backup() {
         <button className="btn" onClick={() => run(visitsCsv, 'Downloaded')}>Visits (CSV)</button>
         <button className="btn" onClick={() => run(rxCsv, 'Downloaded')}>Prescriptions (CSV)</button>
         <button className="btn" onClick={() => run(invoicesCsv, 'Downloaded')}>Invoices (CSV)</button>
+        <button className="btn" onClick={() => run(studiesCsv, 'Downloaded')}>Cardiac reports (CSV)</button>
         <button className="btn primary" onClick={() => run(fullJson, 'Backup downloaded')}>Full backup (JSON)</button>
       </div>
     </div>

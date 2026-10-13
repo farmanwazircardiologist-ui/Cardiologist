@@ -15,6 +15,9 @@ import {
 import { BlurInput, Field, Modal, Money, Autocomplete, useAction, Empty, ConfirmButton, ChoiceField, PhraseField } from '../components/ui.jsx';
 import { PatientFiles } from '../components/Files.jsx';
 import { LettersList } from '../components/Letters.jsx';
+import { StudiesList } from '../components/Studies.jsx';
+import { RiskPanel } from '../components/Risk.jsx';
+import { KIND_SERVICE } from '../lib/studies.js';
 import { PatientHeader } from './PatientProfile.jsx';
 
 const LIMITS = {
@@ -67,7 +70,7 @@ export default function Visit() {
       </PatientHeader>
       <nav className="rail no-print">
         {[['consult', 'Complaint & vitals'], ['exam', 'Examination'], ['ecg', 'ECG & Echo'], ['rx', 'Prescription'],
-          ['followup', 'Follow-up'], ['reports', 'Reports'], ['letters', 'Letters'], ['bill', 'Bill']]
+          ['followup', 'Follow-up'], ['studies', 'Cardiac reports'], ['risk', 'Risk scores'], ['reports', 'Reports'], ['letters', 'Letters'], ['bill', 'Bill']]
           .map(([k, l]) => <a key={k} href={`#${k}`}>{l}</a>)}
       </nav>
       {locked && <div className="note" style={{ marginBottom: 14 }}>
@@ -82,6 +85,11 @@ export default function Visit() {
         <FollowUp visit={visit} />
       </fieldset>
       <PrintBar visit={visit} />
+      <section id="studies" className="panel section" style={{ marginTop: 14 }}>
+        <div className="panel-head"><h2>Cardiac reports</h2><span className="faint">Echo, Holter, TMT, ABPM, cath, device</span></div>
+        <StudiesList patient={patient} visit={visit} compact />
+      </section>
+      <RiskPanel visit={visit} patient={patient} locked={locked} />
       <section id="reports" className="panel section" style={{ marginTop: 14 }}>
         <div className="panel-head"><h2>Reports & files</h2></div>
         <PatientFiles patientId={patient.id} visitId={visit.id} compact />
@@ -237,7 +245,8 @@ function EcgEcho({ visit }) {
   const save = useSaver(visit);
   return (
     <section id="ecg" className="panel section" style={{ marginTop: 14 }}>
-      <div className="panel-head"><h2>ECG, Echo & diagnosis</h2><span className="faint">Done here or read from the patient's reports</span></div>
+      <div className="panel-head"><h2>ECG, Echo & diagnosis</h2><span className="faint">Done here or read from the patient's reports</span><div className="grow" />
+        <Link className="btn small" to={`/studies/new?patient=${visit.patient_id}&kind=echo&visit=${visit.id}`}>Full echo report</Link></div>
       <div className="grid g2">
         <div className="stack">
           <ChoiceField label="ECG rhythm" value={visit.ecg_rhythm || ''} options={CHOICES.ecg_rhythm} onSave={save('ecg_rhythm')} />
@@ -573,8 +582,20 @@ function Bill({ visit }) {
     const lines = await db().invoice_items.where('invoice_id').equals(inv.id).filter((l) => l.status === 'active').toArray();
     return { inv: t, lines };
   }, [visit.id]);
+  const reps = useLiveQuery(() => A.listReports(visit.patient_id, { visitId: visit.id }), [visit.id], []);
   const [sel, setSel] = useState(null);
   const [pay, setPay] = useState(false);
+  // services that match the cardiac reports made in this visit (echo -> Echocardiography ...)
+  const suggested = useMemo(() => {
+    const names = new Set();
+    for (const r of reps) {
+      if (KIND_SERVICE[r.kind]) names.add(KIND_SERVICE[r.kind]);
+      if (r.kind === 'cath' && [].concat(r.data?.proc || []).some((x) => /PCI/.test(x))) names.add('Angioplasty (PCI) professional fee');
+      if (r.kind === 'device' && /ICD|CRT/.test(r.data?.device || '')) { names.delete('Pacemaker implantation'); names.add('ICD / CRT implantation'); }
+    }
+    return services.filter((s) => names.has(s.name));
+  }, [reps, services]);
+  const missing = suggested.filter((s) => !(sel || []).includes(s.id));
   useEffect(() => {
     if (sel === null && services.length) setSel(services.filter((s) => s.auto_add).map((s) => s.id));
   }, [services.length]); // eslint-disable-line
@@ -589,6 +610,12 @@ function Bill({ visit }) {
         <>
           <p className="muted" style={{ marginTop: 0 }}>No invoice yet. Tick what to charge for this visit, then create the invoice.</p>
           {!services.length && <div className="note warn">Add services and fees in Settings → Services.</div>}
+          {missing.length > 0 && (
+            <div className="note" style={{ marginBottom: 10 }}>
+              Reports made in this visit: {missing.map((s) => s.name).join(', ')}.{' '}
+              <button type="button" className="btn small" onClick={() => setSel([...(sel || []), ...missing.map((s) => s.id)])}>Add to the bill</button>
+            </div>
+          )}
           <div className="checks">
             {services.map((s) => (
               <label key={s.id} className="check">

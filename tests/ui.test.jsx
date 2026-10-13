@@ -46,7 +46,14 @@ beforeAll(async () => {
   const pay = await A.addPayment(inv, { amount: 1500, method: 'jazzcash' });
   const letter = await A.createLetter({ patient: pt, visit, doctor: { id: 'doc' }, kind: 'referral', addressed_to: 'Dr. Surgeon, PIC', body: 'Kindly see this patient.' });
   const visit2 = await A.startVisit({ patientId: pt.id, doctorId: 'doc' });
-  ids = { pt, visit, visit2, rx, inv, pay, letter };
+  const echo = await A.saveReport({ patient: pt, visit: visit2, doctor: { id: 'doc' }, kind: 'echo',
+    data: { ef: 35, lvidd: 62, lvids: 50, ivsd: 10, lvpwd: 9, height_cm: 170, weight_kg: 82, seg: '33111111111111111', mv_reg: 'Moderate', calc: {} },
+    impression: '1. LV systolic function is moderately reduced (EF 35%)\n2. Moderate mitral regurgitation', advice: 'Repeat echo in 3 months' });
+  const cath = await A.saveReport({ patient: pt, visit: visit2, doctor: { id: 'doc' }, kind: 'cath',
+    data: { vessels: { lad: { pct: 90, note: 'proximal' } }, dapt_drug: 'Ticagrelor', dapt_months: '12 months', proc: ['Angiography and PCI'] },
+    impression: '1. Single vessel coronary artery disease: LAD',
+    implants: [{ kind: 'stent', brand: 'Xience', size: '3.0 x 24 mm', site: 'LAD prox', serial_no: 'LOT-7788' }] });
+  ids = { pt, visit, visit2, rx, inv, pay, letter, echo, cath };
 }, 20000);
 
 afterEach(cleanup);
@@ -138,6 +145,68 @@ describe('printable documents are built from data on demand', () => {
   });
 });
 
+describe('cardiac reports', () => {
+  it('printed echo report shows measurements, flags, wall motion, impression', async () => {
+    go(`/print/study/${ids.echo.id}`);
+    expect((await find('Echocardiography')).length).toBeGreaterThan(0);
+    expect(screen.getByText('LVIDd')).toBeTruthy();
+    expect(document.body.textContent).toMatch(/62 mm\s*\u25B2/);          // above the normal range, marked
+    expect(screen.getAllByText(/Regional wall motion abnormality/).length).toBeGreaterThan(0);
+    expect(screen.getByText('LV systolic function is moderately reduced (EF 35%)')).toBeTruthy();
+    expect(screen.getByText('Repeat echo in 3 months')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'WhatsApp' })).toBeTruthy();
+  });
+  it('printed cath report lists vessels and the stent with its serial number', async () => {
+    go(`/print/study/${ids.cath.id}`);
+    expect((await find('Cath lab')).length).toBeGreaterThan(0);
+    expect(screen.getByText('LOT-7788')).toBeTruthy();
+    expect(screen.getByText('90%')).toBeTruthy();
+  });
+  it('patient profile has a Cardiac reports tab with stents and DAPT', async () => {
+    go(`/patients/${ids.pt.id}?tab=studies`);
+    expect((await find('Print / PDF / WhatsApp')).length).toBeGreaterThan(1);
+    expect(screen.getByText('Stents and devices')).toBeTruthy();
+    expect(document.body.textContent).toMatch(/DAPT \(Ticagrelor, 12 months\)/);
+    expect(screen.getByText('LOT-7788')).toBeTruthy();
+  });
+  it('overview shows the stent too', async () => {
+    go(`/patients/${ids.pt.id}`);
+    expect((await find('Stents and devices')).length).toBe(1);
+  });
+  it('visit page has Cardiac reports and Risk scores sections; risk calculators work', async () => {
+    go(`/visits/${ids.visit2.id}`);
+    expect((await find('Echocardiography')).length).toBeGreaterThan(0);
+    expect((await find('Risk scores')).length).toBeGreaterThan(0);
+    expect(screen.getByText(/CHA2DS2-VASc/)).toBeTruthy();
+  });
+  it('new echo form opens, fills the normal template and drafts the impression', async () => {
+    go(`/studies/new?patient=${ids.pt.id}&kind=echo&visit=${ids.visit2.id}`);
+    fireEvent.click(await screen.findByRole('button', { name: 'Fill normal template' }));
+    await waitFor(() => expect(document.querySelector('textarea').value).toMatch(/Normal study/), { timeout: 3000 });
+    expect(screen.getByText('Left ventricle')).toBeTruthy();
+    expect(document.querySelector('svg.segplot')).toBeTruthy();
+  });
+  it('editing opens the saved report with its values', async () => {
+    go(`/studies/${ids.echo.id}`);
+    await screen.findByText('Left ventricle');
+    const lv = [...document.querySelectorAll('label.f')].find((l) => l.textContent.startsWith('LVIDd'));
+    expect(lv.querySelector('input').value).toBe('62');
+    expect(lv.querySelector('input').className).toMatch(/abn high/);
+  });
+  it('the pre-filled visit data (BP, weight) came into a new echo', async () => {
+    go(`/studies/new?patient=${ids.pt.id}&kind=echo&visit=${ids.visit2.id}`);
+    await screen.findByText('Left ventricle');
+    const wt = [...document.querySelectorAll('label.f')].find((l) => l.textContent.startsWith('Weight'));
+    expect(wt).toBeTruthy();
+  });
+  it('discharge summary is offered and drafted from the cath report', async () => {
+    go(`/patients/${ids.pt.id}?tab=letters`);
+    fireEvent.click(await screen.findByRole('button', { name: 'Discharge summary' }));
+    await waitFor(() => expect(document.querySelector('textarea').value).toMatch(/Xience/), { timeout: 3000 });
+    expect(document.querySelector('textarea').value).toMatch(/Ticagrelor/);
+  });
+});
+
 describe('reception user', () => {
   beforeAll(() => Object.assign(auth, { role: 'reception', isAdmin: false, isReception: true, profile: { ...auth.profile, role: 'reception' } }));
   it('gets the queue dashboard', async () => { go('/'); expect(await screen.findByRole('heading', { name: "Today's queue" })).toBeTruthy(); });
@@ -154,10 +223,19 @@ describe('reception user', () => {
       cleanup();
     }
   });
+  it('cannot open cardiac reports', async () => {
+    for (const p of [`/print/study/${ids.echo.id}`, `/studies/${ids.echo.id}`]) {
+      go(p); await settle();
+      expect(document.body.textContent).not.toMatch(/LVIDd|Moderate mitral|LOT-7788/);
+      cleanup();
+    }
+  });
   it('patient profile offers the queue and reports, not clinical tabs', async () => {
     go(`/patients/${ids.pt.id}`);
     expect((await find('Upload report')).length).toBeGreaterThan(0);
     expect(screen.queryByText('Cardiac summary')).toBeNull();
+    expect(screen.queryByText('Cardiac reports')).toBeNull();
+    expect(screen.queryByText('Stents and devices')).toBeNull();
     expect(screen.queryByRole('button', { name: 'New visit' })).toBeNull();
   });
 });

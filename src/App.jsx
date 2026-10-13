@@ -9,6 +9,7 @@ import Dashboard from './pages/Dashboard.jsx';
 import Patients from './pages/Patients.jsx';
 import PatientProfile from './pages/PatientProfile.jsx';
 import Visit from './pages/Visit.jsx';
+import Study from './pages/Study.jsx';
 import Appointments from './pages/Appointments.jsx';
 import { Billing, Invoice } from './pages/Billing.jsx';
 import Settings, { SyncIssues } from './pages/Settings.jsx';
@@ -20,6 +21,8 @@ const Docs = {
   Letter: lazy(() => import('./print/Documents.jsx').then((m) => ({ default: m.LetterDoc }))),
   Invoice: lazy(() => import('./print/Documents.jsx').then((m) => ({ default: m.InvoiceDoc }))),
   Receipt: lazy(() => import('./print/Documents.jsx').then((m) => ({ default: m.ReceiptDoc }))),
+  Study: lazy(() => import('./print/Documents.jsx').then((m) => ({ default: m.StudyDoc }))),
+  Test: lazy(() => import('./print/Documents.jsx').then((m) => ({ default: m.TestPrintDoc }))),
 };
 
 const Loading = () => <div className="center-page muted">Loading…</div>;
@@ -42,6 +45,8 @@ export function Gate() {
         {/* Documents open full-page (no sidebar) so they print cleanly. */}
         <Route path="/print/rx/:id" element={<AdminOnly><Docs.Rx /></AdminOnly>} />
         <Route path="/print/letter/:id" element={<AdminOnly><Docs.Letter /></AdminOnly>} />
+        <Route path="/print/study/:id" element={<AdminOnly><Docs.Study /></AdminOnly>} />
+        <Route path="/print/test" element={<AdminOnly><Docs.Test /></AdminOnly>} />
         <Route path="/print/invoice/:id" element={<Docs.Invoice />} />
         <Route path="/print/receipt/:id" element={<Docs.Receipt />} />
         <Route element={<Layout />}>
@@ -51,6 +56,7 @@ export function Gate() {
           <Route path="billing" element={<Billing />} />
           <Route path="invoices/:id" element={<Invoice />} />
           <Route path="sync" element={<SyncIssues />} />
+          <Route path="studies/:id" element={<AdminOnly><Study /></AdminOnly>} />
           <Route path="visits/:id" element={<AdminOnly><Visit /></AdminOnly>} />
           <Route path="appointments" element={<Appointments />} />
           <Route path="reports" element={<AdminOnly><Reports /></AdminOnly>} />

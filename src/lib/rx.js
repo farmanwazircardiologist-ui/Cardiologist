@@ -219,15 +219,17 @@ export function togglePhrase(text, phrase) {
 }
 export const hasPhrase = (text, phrase) => String(text || '').split(',').some((s) => s.trim().toLowerCase() === phrase.toLowerCase());
 
+const kindTitle = (k) => ({ echo: 'Echocardiography', stress_echo: 'Stress echo', tee: 'TEE', holter: 'Holter', tmt: 'Treadmill test', abpm: 'ABPM', cath: 'Cardiac catheterization', device: 'Device implantation' }[k] || k);
+
 // ---------------- letters -------------------------------------------------
 export const LETTER_KINDS = [
   ['referral', 'Referral letter'], ['medical', 'Medical certificate'],
-  ['fitness', 'Fitness certificate'], ['sick_leave', 'Sick leave certificate'],
+  ['fitness', 'Fitness certificate'], ['sick_leave', 'Sick leave certificate'], ['discharge', 'Discharge summary'],
 ];
 export const letterTitle = (k) => (LETTER_KINDS.find((x) => x[0] === k) || [k, k])[1];
 
 // Starting text for a new letter; the doctor edits it before printing.
-export function letterDraft(kind, { patient, visit, rx, doctor, from, to } = {}) {
+export function letterDraft(kind, { patient, visit, rx, doctor, from, to, report, implants = [] } = {}) {
   const name = patient?.full_name || 'the patient';
   const pr = patient?.gender === 'female' ? 'She' : 'He';
   const pos = patient?.gender === 'female' ? 'her' : 'his';
@@ -245,6 +247,25 @@ export function letterDraft(kind, { patient, visit, rx, doctor, from, to } = {})
       meds ? `Current medicines: ${meds}.` : '',
       'Referred for further evaluation and management. Thank you.',
     ].filter(Boolean).join('\n');
+  }
+  if (kind === 'discharge') {
+    const dx = rx?.diagnosis || visit?.diagnosis || '';
+    const proc = report ? (report.impression || '').split('\n').map((l) => l.replace(/^\d+\.\s*/, '')).filter(Boolean).join('\n') : '';
+    const imp = implants.filter((i) => i.brand || i.model || i.serial_no)
+      .map((i) => `${[i.brand, i.model].filter(Boolean).join(' ')}${i.size ? ` ${i.size}` : ''}${i.site ? ` (${i.site})` : ''}${i.serial_no ? `, serial/lot ${i.serial_no}` : ''}`).join('\n');
+    const d = report?.data || {};
+    const dapt = d.dapt_drug && d.dapt_drug !== 'Not needed' ? `Aspirin plus ${d.dapt_drug}${d.dapt_months ? ` for ${d.dapt_months}` : ''}. Do not stop without asking the doctor.` : '';
+    return [
+      `${name} was admitted${from ? ` on ${from}` : ''}${dx ? ` with ${dx}` : ''}${visit?.chief_complaint ? `. Presenting complaint: ${visit.chief_complaint}` : ''}.`,
+      vit,
+      report ? `Procedure: ${kindTitle(report.kind)}${report.data?.access ? ` via ${String(report.data.access).toLowerCase()}` : ''}.` : '',
+      proc ? `Findings:\n${proc}` : '',
+      imp ? `Implants:\n${imp}` : '',
+      `Hospital course was uneventful. ${pr} was stable at discharge${to ? ` on ${to}` : ''}.`,
+      meds ? `Discharge medicines: ${meds}.` : '',
+      dapt ? `Antiplatelet plan: ${dapt}` : '',
+      rx?.follow_up_date ? `Follow-up: please come again on ${rx.follow_up_date}.` : 'Follow-up: please come again after one week, or earlier if chest pain, breathlessness, bleeding or swelling at the puncture site.',
+    ].filter(Boolean).join('\n\n');
   }
   if (kind === 'medical') {
     return `This is to certify that ${name} is under my treatment${dx ? ` for ${dx}` : ''}. ${pr} has been advised regular medication and follow-up.`;

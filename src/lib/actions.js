@@ -358,3 +358,91 @@ export async function createLetter({ patient, visit = null, doctor, kind, addres
 export async function markReminded(appt) {
   return updateRow('appointments', appt.id, { reminded_at: new Date().toISOString() });
 }
+
+// ---------------- cardiac reports (echo, Holter, TMT, ABPM, cath, device) ---------
+// A report is one row with its measurements in "data". Stents and devices are
+// separate rows (implants) so they show on the patient's profile for life.
+export async function listReports(patientId, { kind = null, visitId = null } = {}) {
+  const rows = await db().cardiac_reports.where('patient_id').equals(patientId)
+    .filter((r) => !r.deleted_at && (!kind || r.kind === kind) && (!visitId || r.visit_id === visitId)).toArray();
+  return rows.sort((a, b) => (b.report_date || '').localeCompare(a.report_date || '') || (b.created_at || '').localeCompare(a.created_at || ''));
+}
+
+// The report of the same kind just before this one (for the comparison table).
+export async function previousReport({ patientId, kind, date, excludeId = null }) {
+  const rows = await listReports(patientId, { kind });
+  return rows.find((r) => r.id !== excludeId && (r.report_date || '') <= date) || null;
+}
+
+export async function listImplants(patientId, { reportId = null } = {}) {
+  const rows = await db().implants.where('patient_id').equals(patientId)
+    .filter((i) => !i.deleted_at && (!reportId || i.report_id === reportId)).toArray();
+  return rows.sort((a, b) => (b.implant_date || '').localeCompare(a.implant_date || ''));
+}
+
+async function syncImplants(report, rows = []) {
+  const existing = await db().implants.where('report_id').equals(report.id).filter((i) => !i.deleted_at).toArray();
+  const keep = new Set();
+  for (const r of rows) {
+    const has = [r.brand, r.model, r.serial_no, r.size, r.site].some((x) => x && String(x).trim());
+    if (!has) continue;
+    const body = {
+      kind: r.kind || 'stent', brand: r.brand?.trim() || null, model: r.model?.trim() || null, size: r.size?.trim() || null,
+      site: r.site?.trim() || null, serial_no: r.serial_no?.trim() || null, notes: r.notes?.trim() || null,
+      implant_date: report.report_date, removed_date: r.removed_date || null,
+    };
+    if (r.id && existing.some((e) => e.id === r.id)) { keep.add(r.id); await updateRow('implants', r.id, body); }
+    else { const row = await insertRow('implants', { patient_id: report.patient_id, report_id: report.id, ...body }); keep.add(row.id); }
+  }
+  for (const e of existing) if (!keep.has(e.id)) await updateRow('implants', e.id, { deleted_at: nowIso() });
+}
+
+// Keeps the visit's EF (used by the trend chart and the prescription) in step
+// with the newest echo, so the same number is never typed twice.
+async function pushEchoToVisit(report, impression) {
+  if (report.kind !== 'echo' || !report.visit_id) return;
+  const visit = await db().visits.get(report.visit_id);
+  if (!visit || visit.status === 'cancelled') return;
+  const ef = Number(report.data?.ef ?? report.data?.calc?.ef_vol ?? report.data?.calc?.ef_teich);
+  const patch = {};
+  if (Number.isFinite(ef) && ef >= 5 && ef <= 90) patch.echo_ef = Math.round(ef);
+  if (!visit.echo_findings && impression) patch.echo_findings = impression.split('\n').slice(0, 3).map((l) => l.replace(/^\d+\.\s*/, '')).join('; ');
+  if (Object.keys(patch).length) await updateRow('visits', visit.id, patch);
+}
+
+export async function saveReport({ report = null, patient, visit = null, doctor, kind, date = todayISO(), data, impression = '', advice = '', implants = [] }) {
+  if (!doctor) throw new Error('Add the doctor in Settings first.');
+  if (!patient) throw new Error('Choose the patient first.');
+  const clean = { ...data };
+  delete clean.implants;
+  let out;
+  await tx(['cardiac_reports', 'implants', 'visits'], async () => {
+    // link to today's visit automatically so everything about one consultation stays together
+    let visitId = visit?.id || report?.visit_id || null;
+    if (!visitId && date === todayISO()) visitId = (await findTodaysVisit(patient.id, doctor.id))?.id || null;
+    const body = { kind, report_date: date, data: clean, impression: impression.trim() || null, advice: advice.trim() || null, visit_id: visitId };
+    if (report) out = await updateRow('cardiac_reports', report.id, body);
+    else {
+      const num = await nextNumber('RPT');
+      out = await insertRow('cardiac_reports', { report_number: num, patient_id: patient.id, doctor_id: doctor.id, ...body });
+    }
+    await syncImplants(out, implants);
+    await pushEchoToVisit(out, impression);
+  });
+  return out;
+}
+
+export async function deleteReport(report) {
+  await tx(['cardiac_reports', 'implants'], async () => {
+    await updateRow('cardiac_reports', report.id, { deleted_at: nowIso() });
+    const imps = await db().implants.where('report_id').equals(report.id).filter((i) => !i.deleted_at).toArray();
+    for (const i of imps) await updateRow('implants', i.id, { deleted_at: nowIso() });
+  });
+}
+
+// ---------------- risk scores (saved on the visit) -------------------------------
+export async function saveRiskScore(visit, key, value) {
+  const cur = (await db().visits.get(visit.id)) || visit;
+  const next = { ...(cur.risk_scores || {}), [key]: { ...value, saved_at: nowIso() } };
+  return updateRow('visits', visit.id, { risk_scores: next });
+}

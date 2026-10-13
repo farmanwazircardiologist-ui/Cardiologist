@@ -455,6 +455,77 @@ create table if not exists public.letters (
 create index if not exists letters_patient_idx on public.letters (patient_id);
 create index if not exists letters_upd_idx     on public.letters (updated_at);
 
+-- A discharge summary is a letter, made from a cath lab / procedure report.
+alter table public.letters drop constraint if exists letters_kind_check;
+alter table public.letters add constraint letters_kind_check
+  check (kind in ('referral','medical','fitness','sick_leave','discharge'));
+
+-- ---------------------------------------------------------------------
+-- 5b. Structured cardiac reports: Echo, Stress echo, TEE, Holter, TMT, ABPM,
+--     Cath lab (angiography / PCI) and Device (pacemaker / ICD / CRT).
+--     One table; the fields of each kind live in "data" (jsonb), so a new
+--     field never needs a database change. Doctor only (reception cannot see).
+-- ---------------------------------------------------------------------
+create table if not exists public.cardiac_reports (
+  id            uuid primary key default gen_random_uuid(),
+  report_number text not null unique,
+  patient_id    uuid not null references public.patients(id),
+  visit_id      uuid references public.visits(id),
+  doctor_id     uuid not null references public.doctors(id),
+  kind          text not null check (kind in ('echo','stress_echo','tee','holter','tmt','abpm','cath','device')),
+  report_date   date not null default current_date,
+  data          jsonb not null default '{}'::jsonb check (jsonb_typeof(data) = 'object'),
+  impression    text,
+  advice        text,
+  deleted_at    timestamptz,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  row_version int not null default 1,
+  created_by  uuid,
+  updated_by  uuid
+);
+create index if not exists cardiac_reports_patient_idx on public.cardiac_reports (patient_id, report_date desc);
+create index if not exists cardiac_reports_visit_idx   on public.cardiac_reports (visit_id);
+create index if not exists cardiac_reports_upd_idx     on public.cardiac_reports (updated_at);
+
+-- Devices and stents left in a patient (listed on the patient's profile).
+create table if not exists public.implants (
+  id            uuid primary key default gen_random_uuid(),
+  patient_id    uuid not null references public.patients(id),
+  report_id     uuid references public.cardiac_reports(id),
+  kind          text not null check (kind in ('stent','pacemaker','icd','crt','valve','closure_device','other')),
+  brand         text,
+  model         text,
+  size          text,
+  site          text,          -- vessel (LAD, RCA ...) or position
+  serial_no     text,
+  implant_date  date not null default current_date,
+  notes         text,
+  removed_date  date,
+  deleted_at    timestamptz,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  row_version int not null default 1,
+  created_by  uuid,
+  updated_by  uuid
+);
+create index if not exists implants_patient_idx on public.implants (patient_id);
+create index if not exists implants_report_idx  on public.implants (report_id);
+create index if not exists implants_upd_idx     on public.implants (updated_at);
+
+-- Added to tables that already existed (safe to run again).
+alter table public.visits add column if not exists risk_scores jsonb not null default '{}'::jsonb;
+alter table public.clinic_settings add column if not exists print_font_pct int not null default 100;
+alter table public.clinic_settings add column if not exists print_margin_top_mm int;
+alter table public.clinic_settings add column if not exists print_margin_side_mm int;
+alter table public.clinic_settings add column if not exists print_margin_bottom_mm int;
+alter table public.clinic_settings drop constraint if exists clinic_settings_print_chk;
+alter table public.clinic_settings add constraint clinic_settings_print_chk check (
+  print_font_pct between 70 and 150
+  and (print_margin_top_mm    is null or print_margin_top_mm    between 0 and 40)
+  and (print_margin_side_mm   is null or print_margin_side_mm   between 0 and 40)
+  and (print_margin_bottom_mm is null or print_margin_bottom_mm between 0 and 40));
+
 -- ---------------------------------------------------------------------
 -- 6. Billing (an invoice is created only on request)
 -- ---------------------------------------------------------------------
@@ -625,6 +696,20 @@ begin
   return new;
 end $$;
 
+-- An implant that points at a report must belong to that report's patient.
+create or replace function public.tg_report_patient_match() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare rp uuid;
+begin
+  if new.report_id is not null then
+    select patient_id into rp from public.cardiac_reports where id = new.report_id;
+    if rp is not null and rp <> new.patient_id then
+      raise exception 'Implant belongs to a different patient than its report';
+    end if;
+  end if;
+  return new;
+end $$;
+
 create or replace function public.tg_block_delete() returns trigger
 language plpgsql as $$
 begin
@@ -735,7 +820,7 @@ declare t text;
 begin
   foreach t in array array['clinic_settings','doctors','profiles','patients','visits','appointments',
     'medicines','prescriptions','rx_templates','clinic_services','patient_files','letters',
-    'invoices','invoice_items','payments']
+    'cardiac_reports','implants','invoices','invoice_items','payments']
   loop
     execute format('drop trigger if exists a_row_meta on public.%I', t);
     execute format('create trigger a_row_meta before insert or update on public.%I
@@ -743,7 +828,7 @@ begin
   end loop;
 
   foreach t in array array['clinic_settings','doctors','profiles','patients','prescriptions',
-    'rx_templates','clinic_services','patient_files','letters','invoices','invoice_items','payments']
+    'rx_templates','clinic_services','patient_files','letters','cardiac_reports','implants','invoices','invoice_items','payments']
   loop
     execute format('drop trigger if exists z_audit on public.%I', t);
     execute format('create trigger z_audit after insert or update or delete on public.%I
@@ -751,14 +836,14 @@ begin
   end loop;
 
   foreach t in array array['patients','visits','appointments','prescriptions','patient_files',
-    'letters','invoices','invoice_items','payments']
+    'letters','cardiac_reports','implants','invoices','invoice_items','payments']
   loop
     execute format('drop trigger if exists no_delete on public.%I', t);
     execute format('create trigger no_delete before delete on public.%I
                     for each row execute function public.tg_block_delete()', t);
   end loop;
 
-  foreach t in array array['prescriptions','invoices','patient_files','letters']
+  foreach t in array array['prescriptions','invoices','patient_files','letters','cardiac_reports']
   loop
     execute format('drop trigger if exists b_visit_patient on public.%I', t);
     execute format('create trigger b_visit_patient before insert or update on public.%I
@@ -772,6 +857,10 @@ begin
                     for each row execute function public.tg_unarchive_patient()', t);
   end loop;
 end $$;
+
+drop trigger if exists b_report_patient on public.implants;
+create trigger b_report_patient before insert or update on public.implants
+  for each row execute function public.tg_report_patient_match();
 
 drop trigger if exists b_profiles_guard on public.profiles;
 create trigger b_profiles_guard before update on public.profiles
@@ -821,6 +910,8 @@ begin
   r := r || jsonb_build_object('RX', coalesce(v,0));
   select max(split_part(letter_number,'-',2)::int) into v from public.letters where letter_number like 'DOC'||p_code||'-%';
   r := r || jsonb_build_object('DOC', coalesce(v,0));
+  select max(split_part(report_number,'-',2)::int) into v from public.cardiac_reports where report_number like 'RPT'||p_code||'-%';
+  r := r || jsonb_build_object('RPT', coalesce(v,0));
   select max(split_part(invoice_number,'-',2)::int) into v from public.invoices where invoice_number like 'INV'||p_code||'-%';
   r := r || jsonb_build_object('INV', coalesce(v,0));
   select max(split_part(payment_number,'-',2)::int) into v from public.payments where payment_number like 'PAY'||p_code||'-%';
@@ -844,6 +935,7 @@ begin
       greatest(p.created_at,
         (select max(v.visit_date)::timestamptz  from public.visits v        where v.patient_id = p.id),
         (select max(a.appt_date)::timestamptz   from public.appointments a  where a.patient_id = p.id),
+        (select max(cr.report_date)::timestamptz from public.cardiac_reports cr where cr.patient_id = p.id),
         (select max(pm.received_at)             from public.payments pm     where pm.patient_id = p.id)) as last_act
     from public.patients p
     where p.deleted_at is null and p.anonymized_at is null
@@ -894,6 +986,12 @@ begin
   update public.prescriptions r set advice = null
    where r.patient_id = any(p_patient_ids)
      and exists (select 1 from public.patients p where p.id = r.patient_id and p.anonymized_at is not null);
+  update public.cardiac_reports cr set data = '{}'::jsonb, impression = null, advice = null
+   where cr.patient_id = any(p_patient_ids)
+     and exists (select 1 from public.patients p where p.id = cr.patient_id and p.anonymized_at is not null);
+  update public.implants im set notes = null, serial_no = null
+   where im.patient_id = any(p_patient_ids)
+     and exists (select 1 from public.patients p where p.id = im.patient_id and p.anonymized_at is not null);
   update public.letters l set body = null, addressed_to = null
    where l.patient_id = any(p_patient_ids)
      and exists (select 1 from public.patients p where p.id = l.patient_id and p.anonymized_at is not null);
@@ -910,7 +1008,7 @@ begin
   delete from public.sync_conflicts where resolved_at < now() - interval '90 days';
   delete from public.audit_log
    where at < now() - make_interval(years => yrs)
-     and table_name not in ('invoices','invoice_items','payments','prescriptions','clinic_settings');
+     and table_name not in ('invoices','invoice_items','payments','prescriptions','cardiac_reports','implants','clinic_settings');
   delete from public.devices where last_seen_at < now() - make_interval(years => yrs);
 end $$;
 
@@ -951,7 +1049,7 @@ declare t text;
 begin
   foreach t in array array['clinic_settings','doctors','profiles','devices','patients','visits',
     'appointments','medicines','prescriptions','rx_templates','clinic_services','patient_files',
-    'letters','invoices','invoice_items','payments','audit_log','sync_conflicts']
+    'letters','cardiac_reports','implants','invoices','invoice_items','payments','audit_log','sync_conflicts']
   loop
     execute format('alter table public.%I enable row level security', t);
   end loop;
@@ -1008,6 +1106,12 @@ select public._pol('rx_templates','admin_u','update','public.is_admin()','public
 select public._pol('medicines','admin_s','select','public.is_admin()',null);
 select public._pol('medicines','admin_i','insert',null,'public.is_admin()');
 select public._pol('medicines','admin_u','update','public.is_admin()','public.is_admin()');
+select public._pol('cardiac_reports','admin_s','select','public.is_admin()',null);
+select public._pol('cardiac_reports','admin_i','insert',null,'public.is_admin()');
+select public._pol('cardiac_reports','admin_u','update','public.is_admin()','public.is_admin()');
+select public._pol('implants','admin_s','select','public.is_admin()',null);
+select public._pol('implants','admin_i','insert',null,'public.is_admin()');
+select public._pol('implants','admin_u','update','public.is_admin()','public.is_admin()');
 select public._pol('letters','admin_s','select','public.is_admin()',null);
 select public._pol('letters','admin_i','insert',null,'public.is_admin()');
 select public._pol('letters','admin_u','update','public.is_admin()','public.is_admin()');
@@ -1068,7 +1172,13 @@ insert into public.clinic_services (name, price, auto_add, sort_order) values
  ('Echocardiography', null, false, 4),
  ('ETT (Exercise tolerance test)', null, false, 5),
  ('Holter monitoring (24 h)', null, false, 6),
- ('ABPM (24 h BP monitoring)', null, false, 7)
+ ('ABPM (24 h BP monitoring)', null, false, 7),
+ ('Stress echo', null, false, 8),
+ ('TEE (Transesophageal echo)', null, false, 9),
+ ('Coronary angiography', null, false, 10),
+ ('Angioplasty (PCI) professional fee', null, false, 11),
+ ('Pacemaker implantation', null, false, 12),
+ ('ICD / CRT implantation', null, false, 13)
 on conflict do nothing;
 
 -- Cardiac medicine names for autocomplete (generic names). New names typed in
